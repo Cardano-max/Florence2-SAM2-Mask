@@ -28,8 +28,10 @@ from Florence_2_large_ft.processing_florence2 import Florence2Processor
 
 
 # Import SAM modules
-from florence-sam-masking.sam2.modeling.sam2_base import SAM2Base
-from florence-sam-masking.sam2.sam2_image_predictor import SAM2ImagePredictor
+# Import SAM modules
+from florence_sam_masking.sam2.modeling.sam2_base import SAM2Base
+from florence_sam_masking.sam2.sam2_image_predictor import SAM2ImagePredictor
+
 
 # Import utility functions
 from florence_sam_masking.utils.florence import load_florence_model, run_florence_inference
