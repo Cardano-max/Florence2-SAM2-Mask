@@ -4,10 +4,8 @@ import numpy as np
 import torch
 import supervision as sv
 from PIL import Image
-import requests
-from io import BytesIO
 import cv2
-import time
+import matplotlib.pyplot as plt
 from transformers import AutoTokenizer, AutoImageProcessor
 from omegaconf import OmegaConf
 import hydra
@@ -21,21 +19,13 @@ sam_model_dir = os.path.join(current_dir, 'florence-sam-masking')
 sys.path.extend([florence_model_dir, sam_model_dir])
 
 # Import the custom Florence modules
-from Florence_2_large_ft.configuration_florence2 import Florence2Config
-from Florence_2_large_ft.modeling_florence2 import Florence2ForConditionalGeneration
-from Florence_2_large_ft.processing_florence2 import Florence2Processor
+from configuration_florence2 import Florence2Config
+from modeling_florence2 import Florence2ForConditionalGeneration
+from processing_florence2 import Florence2Processor
 
-
-
-# Import SAM modules
 # Import SAM modules
 from florence_sam_masking.sam2.modeling.sam2_base import SAM2Base
 from florence_sam_masking.sam2.sam2_image_predictor import SAM2ImagePredictor
-
-
-# Import utility functions
-from florence_sam_masking.utils.florence import load_florence_model, run_florence_inference
-from florence_sam_masking.utils.sam import load_sam_image_model, run_sam_inference
 
 # Set up device
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -48,133 +38,108 @@ FLORENCE_MODEL_PATH = florence_model_dir
 SAM_CHECKPOINT = os.path.join(florence_model_dir, "checkpoints", "sam2_hiera_large.pt")
 SAM_CONFIG_DIR = os.path.join(sam_model_dir, "configs")
 
-FLORENCE_MODEL, FLORENCE_PROCESSOR = load_florence_model(device=DEVICE)
-SAM_IMAGE_MODEL = load_sam_image_model(device=DEVICE, config=os.path.join(SAM_CONFIG_DIR, "sam2_hiera_l.yaml"), checkpoint=SAM_CHECKPOINT)
+def load_florence_model(device: torch.device, model_path: str):
+    config = Florence2Config.from_pretrained(model_path)
+    model = Florence2ForConditionalGeneration.from_pretrained(model_path, config=config).to(device).eval()
+    return model
 
-def fetch_image_from_url(image_url):
-    try:
-        response = requests.get(image_url)
-        response.raise_for_status()
-        img = Image.open(BytesIO(response.content))
-        return img
-    except Exception as e:
-        return None
-
-class calculateDuration:
-    def __init__(self, activity_name=""):
-        self.activity_name = activity_name
-
-    def __enter__(self):
-        self.start_time = time.time()
-        self.start_time_formatted = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.start_time))
-        print(f"Activity: {self.activity_name}, Start time: {self.start_time_formatted}")
-        return self
+def load_sam_image_model(device: torch.device, config_dir: str, checkpoint: str = SAM_CHECKPOINT):
+    GlobalHydra.instance().clear()
+    initialize(config_path=config_dir, version_base=None)
+    cfg = compose(config_name="sam2_hiera_l")
     
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.end_time = time.time()
-        self.elapsed_time = self.end_time - self.start_time
-        self.end_time_formatted = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.end_time))
-        
-        if self.activity_name:
-            print(f"Elapsed time for {self.activity_name}: {self.elapsed_time:.6f} seconds")
-        else:
-            print(f"Elapsed time: {self.elapsed_time:.6f} seconds")
-        
-        print(f"Activity: {self.activity_name}, End time: {self.start_time_formatted}")
+    model = SAM2Base(**cfg.model)
+    model.to(device)
+    ckpt = torch.load(checkpoint, map_location='cpu')
+    model.load_state_dict(ckpt['model'], strict=True)
+    return SAM2ImagePredictor(sam_model=model)
 
-@torch.inference_mode()
-@torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-def process_image(image_input, image_url, task_prompt, text_prompt=None, dilate=0, merge_masks=False, return_rectangles=False, invert_mask=False):
-    
-    if not image_input and not image_url:
-        print("Please provide an image or image URL.")
-        return None
-    
-    if not task_prompt:
-        print("Please enter a task prompt.")
-        return None
-   
-    if image_url:
-        with calculateDuration("Download Image"):
-            print("start to fetch image from url", image_url)
-            image_input = fetch_image_from_url(image_url)
-            print("fetch image success")
-    elif isinstance(image_input, str):
-        image_input = Image.open(image_input)
+def run_sam_inference(model, image: np.ndarray, detections: sv.Detections):
+    model.set_image(image)
+    bboxes = sorted(detections.xyxy, key=lambda bbox: bbox[0])
+    mask, score, _ = model.predict(box=bboxes, multimask_output=False)
+    if len(mask.shape) == 4:
+        mask = np.squeeze(mask)
+    detections.mask = mask.astype(bool)
+    return detections
 
-    # start to parse prompt
-    with calculateDuration("FLORENCE"):
-        print(task_prompt, text_prompt)
-        _, result = run_florence_inference(
-            model=FLORENCE_MODEL,
-            processor=FLORENCE_PROCESSOR,
-            device=DEVICE,
-            image=image_input,
-            task=task_prompt,
-            text=text_prompt
-        )
-    with calculateDuration("sv.Detections"):
-        # start to detect
-        detections = sv.Detections.from_lmm(
-            lmm=sv.LMM.FLORENCE_2,
-            result=result,
-            resolution_wh=image_input.size
-        )
-    
-    images = []
+def process_image(
+    image_path,
+    task_prompt: str,
+    text_prompt: str = None,
+    dilate: int = 0,
+    merge_masks: bool = False,
+    return_rectangles: bool = False,
+    invert_mask: bool = False
+):
+    # Load models
+    florence_model = load_florence_model(DEVICE, FLORENCE_MODEL_PATH)
+    sam_model = load_sam_image_model(DEVICE, config_dir=SAM_CONFIG_DIR)
+
+    # Load tokenizer and image processor
+    tokenizer = AutoTokenizer.from_pretrained(FLORENCE_MODEL_PATH)
+    image_processor = AutoImageProcessor.from_pretrained(FLORENCE_MODEL_PATH)
+
+    # Create processor instance
+    processor = Florence2Processor(image_processor=image_processor, tokenizer=tokenizer)
+
+    # Load image
+    image = Image.open(image_path)
+
+    # Prepare inputs
+    inputs = processor(text=[task_prompt, text_prompt], images=image, return_tensors="pt")
+    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+
+    # Generate output
+    with torch.no_grad():
+        output = florence_model.generate(**inputs, max_length=512)
+
+    # Post-process output
+    result = processor.post_process_generation(output[0], task=task_prompt, image_size=image.size)
+
+    # Create detections
+    detections = sv.Detections.from_lmm(
+        lmm=sv.LMM.FLORENCE_2,
+        result=result,
+        resolution_wh=image.size
+    )
+
+    # Run SAM inference
+    detections = run_sam_inference(sam_model, np.array(image.convert("RGB")), detections)
+
+    # Process masks
+    masks = []
     if return_rectangles:
-        with calculateDuration("generate rectangle mask"):
-            # create mask in rectangle
-            (image_width, image_height) = image_input.size
-            bboxes = detections.xyxy
-            merge_mask_image = np.zeros((image_height, image_width), dtype=np.uint8)
-            # sort from left to right
-            bboxes = sorted(bboxes, key=lambda bbox: bbox[0])
-            for bbox in bboxes:
-                x1, y1, x2, y2 = map(int, bbox)
-                cv2.rectangle(merge_mask_image, (x1, y1), (x2, y2), 255, thickness=cv2.FILLED)
-                clip_mask = np.zeros((image_height, image_width), dtype=np.uint8)
-                cv2.rectangle(clip_mask, (x1, y1), (x2, y2), 255, thickness=cv2.FILLED)
-                images.append(clip_mask)
-            if merge_masks:
-                images = [merge_mask_image] + images
+        for bbox in detections.xyxy:
+            mask = np.zeros(image.size[::-1], dtype=np.uint8)
+            cv2.rectangle(mask, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), 255, thickness=cv2.FILLED)
+            masks.append(mask)
     else:
-        with calculateDuration("generate segment mask"):
-            # using sam generate segments images        
-            detections = run_sam_inference(SAM_IMAGE_MODEL, image_input, detections)
-            if len(detections) == 0:
-                print("No objects detected.")
-                return None
-            print("mask generated:", len(detections.mask))
-            kernel_size = dilate
-            kernel = np.ones((kernel_size, kernel_size), np.uint8)
+        for i in range(len(detections.mask)):
+            mask = detections.mask[i].astype(np.uint8) * 255
+            if dilate > 0:
+                kernel = np.ones((dilate, dilate), np.uint8)
+                mask = cv2.dilate(mask, kernel, iterations=1)
+            masks.append(mask)
 
-            for i in range(len(detections.mask)):
-                mask = detections.mask[i].astype(np.uint8) * 255
-                if dilate > 0:
-                    mask = cv2.dilate(mask, kernel, iterations=1)
-                images.append(mask)
+    if merge_masks:
+        merged_mask = np.zeros_like(masks[0], dtype=np.uint8)
+        for mask in masks:
+            merged_mask = cv2.bitwise_or(merged_mask, mask)
+        masks = [merged_mask]
 
-            if merge_masks:
-                merged_mask = np.zeros_like(images[0], dtype=np.uint8)
-                for mask in images:
-                    merged_mask = cv2.bitwise_or(merged_mask, mask)
-                images = [merged_mask]
     if invert_mask:
-        with calculateDuration("invert mask colors"):
-            images = [cv2.bitwise_not(mask) for mask in images]
+        masks = [cv2.bitwise_not(mask) for mask in masks]
 
-    return images, result
+    return masks, result
 
 if __name__ == "__main__":
-    # Example usage
-    image_path = "Jimin.jpeg"  # Replace with your image path
+    image_path = "path/to/your/image.jpg"  # Replace with your image path
     task_prompt = "<OPEN_VOCABULARY_DETECTION>"
     text_prompt = "person"
 
     result_masks, parsed_result = process_image(
-        image_input=image_path,
-        image_url=None,
+        image_path=image_path,
         task_prompt=task_prompt,
         text_prompt=text_prompt,
         dilate=10,
@@ -183,8 +148,27 @@ if __name__ == "__main__":
         invert_mask=False
     )
 
+    # Display results
     if result_masks:
-        print(f"Number of masks generated: {len(result_masks)}")
+        plt.figure(figsize=(15, 5))
+        for i, mask in enumerate(result_masks):
+            plt.subplot(1, len(result_masks), i+1)
+            plt.imshow(mask, cmap='gray')
+            plt.title(f"Mask {i+1}")
+            plt.axis('off')
+        plt.tight_layout()
+        plt.show()
+
+        # Overlay mask on original image
+        original_image = Image.open(image_path)
+        plt.figure(figsize=(10, 10))
+        plt.imshow(original_image)
+        for mask in result_masks:
+            plt.imshow(mask, alpha=0.5, cmap='jet')
+        plt.axis('off')
+        plt.title("Masks overlaid on original image")
+        plt.show()
+
         print("Parsed Result:", parsed_result)
     else:
         print("No masks were generated.")
