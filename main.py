@@ -19,9 +19,9 @@ sam_model_dir = os.path.join(current_dir, 'florence-sam-masking')
 sys.path.extend([florence_model_dir, sam_model_dir])
 
 # Import the custom Florence modules
-from Florence_2_large_ft.configuration_florence2 import Florence2Config
-from Florence_2_large_ft.modeling_florence2 import Florence2ForConditionalGeneration
-from Florence_2_large_ft.processing_florence2 import Florence2Processor
+from configuration_florence2 import Florence2Config
+from modeling_florence2 import Florence2ForConditionalGeneration
+from processing_florence2 import Florence2Processor
 
 # Import SAM modules
 from sam2.modeling.sam2_base import SAM2Base
@@ -157,6 +157,7 @@ def display_results(image_path, masks, parsed_result):
         print("Parsed Result:", parsed_result)
     else:
         print("No masks were generated.")
+
 
 if __name__ == "__main__":
     image_path = "path/to/your/image.jpg"  # Replace with your image path
