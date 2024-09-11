@@ -21,13 +21,13 @@ sam_model_dir = os.path.join(current_dir, 'florence-sam-masking')
 sys.path.extend([florence_model_dir, sam_model_dir])
 
 # Import the custom Florence modules
-from Florence_2_large_ft.configuration_florence2 import Florence2Config
-from Florence_2_large_ft.modeling_florence2 import Florence2ForConditionalGeneration
-from Florence_2_large_ft.processing_florence2 import Florence2Processor
+from Florence-2-large-ft.configuration_florence2 import Florence2Config
+from Florence-2-large-ft.modeling_florence2 import Florence2ForConditionalGeneration
+from Florence-2-large-ft.processing_florence2 import Florence2Processor\
 
 # Import SAM modules
-from florence_sam_masking.sam2.modeling.sam2_base import SAM2Base
-from florence_sam_masking.sam2.sam2_image_predictor import SAM2ImagePredictor
+from florence-sam-masking.sam2.modeling.sam2_base import SAM2Base
+from florence-sam-masking.sam2.sam2_image_predictor import SAM2ImagePredictor
 
 # Import utility functions
 from florence_sam_masking.utils.florence import load_florence_model, run_florence_inference
