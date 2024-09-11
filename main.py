@@ -19,13 +19,13 @@ sam_model_dir = os.path.join(current_dir, 'florence-sam-masking')
 sys.path.extend([florence_model_dir, sam_model_dir])
 
 # Import the custom Florence modules
-from configuration_florence2 import Florence2Config
-from modeling_florence2 import Florence2ForConditionalGeneration
-from processing_florence2 import Florence2Processor
+from Florence-2-large-ft.configuration_florence2 import Florence2Config
+from Florence-2-large-ft.modeling_florence2 import Florence2ForConditionalGeneration
+from Florence-2-large-ft.processing_florence2 import Florence2Processor
 
 # Import SAM modules
-from sam2.modeling.sam2_base import SAM2Base
-from sam2.sam2_image_predictor import SAM2ImagePredictor
+from florence-sam-masking.sam2.modeling.sam2_base import SAM2Base
+from florence-sam-masking.sam2.sam2_image_predictor import SAM2ImagePredictor
 
 # Set up device
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -159,9 +159,9 @@ def display_results(image_path, masks, parsed_result):
         print("No masks were generated.")
 
 if __name__ == "__main__":
-    image_path = "path/to/your/image.jpg"  # Replace with your image path
+    image_path = "/Jimin.jpeg"  # Replace with your image path
     task_prompt = "<OPEN_VOCABULARY_DETECTION>"
-    text_prompt = "person"
+    text_prompt = "Full Dress"
 
     result_masks, parsed_result = process_image(
         image_path=image_path,
