@@ -16,6 +16,8 @@ import numpy as np
 import cv2
 from PIL import Image
 from typing import List, Dict, Optional
+from typing import List, Dict, Optional
+from PIL import Image
 
 from utils.florence import load_florence_model, run_florence_inference, \
     FLORENCE_OPEN_VOCABULARY_DETECTION_TASK
