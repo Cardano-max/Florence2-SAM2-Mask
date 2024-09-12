@@ -18,10 +18,13 @@ from PIL import Image
 from typing import List, Dict, Optional
 from typing import List, Dict, Optional
 from PIL import Image
+from utils.sam import load_sam_model, run_sam_inference
+
 
 from utils.florence import load_florence_model, run_florence_inference, \
     FLORENCE_OPEN_VOCABULARY_DETECTION_TASK
 from utils.sam import load_sam_image_model, run_sam_inference
+SAM_IMAGE_MODEL = load_sam_model(device=DEVICE)
 
 DEVICE = torch.device("cuda")
 # DEVICE = torch.device("cpu")
