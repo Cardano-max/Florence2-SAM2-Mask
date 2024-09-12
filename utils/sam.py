@@ -6,6 +6,7 @@ import torch
 from PIL import Image
 from sam2.build_sam import build_sam2, build_sam2_video_predictor
 from sam2.sam2_image_predictor import SAM2ImagePredictor
+from typing import List, Dict
 
 # SAM_CHECKPOINT = "checkpoints/sam2_hiera_small.pt"
 # SAM_CONFIG = "sam2_hiera_s.yaml"
@@ -33,18 +34,18 @@ def load_sam_video_model(
 def run_sam_inference(
     model: Any,
     image: Image,
-    detections: sv.Detections
-) -> sv.Detections:
+    detections: List[Dict]
+) -> List[np.ndarray]:
     image = np.array(image.convert("RGB"))
     model.set_image(image)
     # from left to right
-    bboxes = detections.xyxy
+    bboxes = [detection['bbox'] for detection in detections]
     bboxes = sorted(bboxes, key=lambda bbox: bbox[0])
-    mask, score, _ = model.predict(box=bboxes, multimask_output=False)
-
-    # dirty fix; remove this later
-    if len(mask.shape) == 4:
-        mask = np.squeeze(mask)
-
-    detections.mask = mask.astype(bool)
-    return detections
+    masks = []
+    for bbox in bboxes:
+        mask, score, _ = model.predict(box=bbox, multimask_output=False)
+        # dirty fix; remove this later
+        if len(mask.shape) == 4:
+            mask = np.squeeze(mask)
+        masks.append(mask)
+    return masks

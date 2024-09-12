@@ -91,25 +91,28 @@ def process_image(image_input, image_url, task_prompt, text_prompt=None, dilate=
             task=task_prompt,
             text=text_prompt
         )
-    with calculateDuration("sv.Detections"):
-        # start to dectect
-        detections = sv.Detections.from_lmm(
-            lmm=sv.LMM.FLORENCE_2,
-            result=result,
-            resolution_wh=image_input.size
-        )
-    # json_result = json.dumps([])
-    # print(detections)
+    
+    # Create detections manually
+    detections = []
+    if 'bboxes' in result[task_prompt]:
+        bboxes = result[task_prompt]['bboxes']
+        labels = result[task_prompt]['labels']
+        for bbox, label in zip(bboxes, labels):
+            detections.append({
+                'bbox': bbox,
+                'label': label
+            })
+    
     images = []
     if return_rectangles:
         with calculateDuration("generate rectangle mask"):
             # create mask in rectangle
             (image_width, image_height) = image_input.size
-            bboxes = detections.xyxy
             merge_mask_image = np.zeros((image_height, image_width), dtype=np.uint8)
             # sort from left to right
-            bboxes = sorted(bboxes, key=lambda bbox: bbox[0])
-            for bbox in bboxes:
+            detections = sorted(detections, key=lambda x: x['bbox'][0])
+            for detection in detections:
+                bbox = detection['bbox']
                 x1, y1, x2, y2 = map(int, bbox)
                 cv2.rectangle(merge_mask_image, (x1, y1), (x2, y2), 255, thickness=cv2.FILLED)
                 clip_mask = np.zeros((image_height, image_width), dtype=np.uint8)
@@ -118,18 +121,18 @@ def process_image(image_input, image_url, task_prompt, text_prompt=None, dilate=
             if merge_masks:
                 images = [merge_mask_image] + images
     else:
-        with calculateDuration("generate segmenet mask"):
+        with calculateDuration("generate segment mask"):
             # using sam generate segments images        
-            detections = run_sam_inference(SAM_IMAGE_MODEL, image_input, detections)
-            if len(detections) == 0:
+            sam_results = run_sam_inference(SAM_IMAGE_MODEL, image_input, detections)
+            if len(sam_results) == 0:
                 gr.Info("No objects detected.")
                 return None
-            print("mask generated:", len(detections.mask))
+            print("mask generated:", len(sam_results))
             kernel_size = dilate
             kernel = np.ones((kernel_size, kernel_size), np.uint8)
 
-            for i in range(len(detections.mask)):
-                mask = detections.mask[i].astype(np.uint8) * 255
+            for mask in sam_results:
+                mask = mask.astype(np.uint8) * 255
                 if dilate > 0:
                     mask = cv2.dilate(mask, kernel, iterations=1)
                 images.append(mask)
