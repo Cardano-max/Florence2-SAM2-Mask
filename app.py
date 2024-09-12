@@ -7,23 +7,18 @@ import torch
 from PIL import Image
 from io import BytesIO
 import PIL.Image
+import requests
 import cv2
 import json
 import time
 import os
-from diffusers.utils import load_image
-import json
+
 from utils.florence import load_florence_model, run_florence_inference, \
     FLORENCE_OPEN_VOCABULARY_DETECTION_TASK
 from utils.sam import load_sam_image_model, run_sam_inference
-import copy
-import random
-import time
-import boto3
-from datetime import datetime
 
 DEVICE = torch.device("cuda")
-MAX_SEED = np.iinfo(np.int32).max
+# DEVICE = torch.device("cpu")
 
 torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
 if torch.cuda.get_device_properties(0).major >= 8:
@@ -34,6 +29,14 @@ if torch.cuda.get_device_properties(0).major >= 8:
 FLORENCE_MODEL, FLORENCE_PROCESSOR = load_florence_model(device=DEVICE)
 SAM_IMAGE_MODEL = load_sam_image_model(device=DEVICE)
 
+def fetch_image_from_url(image_url):
+    try:
+        response = requests.get(image_url)
+        response.raise_for_status()
+        img = Image.open(BytesIO(response.content))
+        return img
+    except Exception as e:
+        return None
 
 class calculateDuration:
     def __init__(self, activity_name=""):
@@ -57,45 +60,28 @@ class calculateDuration:
         
         print(f"Activity: {self.activity_name}, End time: {self.start_time_formatted}")
 
-def upload_image_to_r2(image, account_id, access_key, secret_key, bucket_name):
-    print("upload_image_to_r2", account_id, access_key, secret_key, bucket_name)
-    connectionUrl = f"https://{account_id}.r2.cloudflarestorage.com"
-    img = Image.fromarray(image)
-    s3 = boto3.client(
-        's3',
-        endpoint_url=connectionUrl,
-        region_name='auto',
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key
-    )
-
-    current_time = datetime.now().strftime("%Y/%m/%d/%H%M%S")
-    image_file = f"generated_images/{current_time}_{random.randint(0, MAX_SEED)}.png"
-    buffer = BytesIO()
-    img.save(buffer, "PNG")
-    buffer.seek(0)
-    s3.upload_fileobj(buffer, bucket_name, image_file)
-    print("upload finish", image_file)
-    return image_file
 
 @spaces.GPU()
 @torch.inference_mode()
 @torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-def process_image(image_url, task_prompt, text_prompt=None, dilate=0, merge_masks=False, return_rectangles=False, invert_mask=False, upload_to_r2=False, account_id="", bucket="", access_key="", secret_key="") -> Optional[Image.Image]:
+def process_image(image_input, image_url, task_prompt, text_prompt=None, dilate=0, merge_masks=False, return_rectangles=False, invert_mask=False) -> Optional[Image.Image]:
     
-    if not task_prompt or not image_url:
-        gr.Info("Please enter a image url or task prompt.")
-        return None, json.dumps({"status": "failed", "message": "invalid parameters"})
+    if not image_input:
+        gr.Info("Please upload an image.")
+        return None
+    
+    if not task_prompt:
+        gr.Info("Please enter a task prompt.")
+        return None
    
-    with calculateDuration("Download Image"):
-        print("start to fetch image from url", image_url)
-        image_input = load_image(image_url)
-        if not image_input:
-            return None, json.dumps({"status": "failed", "message": "invalid image"})
-
+    if image_url:
+        with calculateDuration("Download Image"):
+            print("start to fetch image from url", image_url)
+            image_input = fetch_image_from_url(image_url)
+            print("fetch image success")
 
     # start to parse prompt
-    with calculateDuration("run_florence_inference"):
+    with calculateDuration("FLORENCE"):
         print(task_prompt, text_prompt)
         _, result = run_florence_inference(
             model=FLORENCE_MODEL,
@@ -105,7 +91,7 @@ def process_image(image_url, task_prompt, text_prompt=None, dilate=0, merge_mask
             task=task_prompt,
             text=text_prompt
         )
-    with calculateDuration("run_detections"):
+    with calculateDuration("sv.Detections"):
         # start to dectect
         detections = sv.Detections.from_lmm(
             lmm=sv.LMM.FLORENCE_2,
@@ -137,7 +123,7 @@ def process_image(image_url, task_prompt, text_prompt=None, dilate=0, merge_mask
             detections = run_sam_inference(SAM_IMAGE_MODEL, image_input, detections)
             if len(detections) == 0:
                 gr.Info("No objects detected.")
-                return None, json.dumps({"status": "failed", "message": "no object tetected"})
+                return None
             print("mask generated:", len(detections.mask))
             kernel_size = dilate
             kernel = np.ones((kernel_size, kernel_size), np.uint8)
@@ -157,20 +143,7 @@ def process_image(image_url, task_prompt, text_prompt=None, dilate=0, merge_mask
         with calculateDuration("invert mask colors"):
             images = [cv2.bitwise_not(mask) for mask in images]
 
-    # return results
-    json_result = {"status": "success", "message": "", "image_urls": []}
-    if upload_to_r2:
-        with calculateDuration("upload to r2"):
-            image_urls = []
-            for image in images:
-                url = upload_image_to_r2(image, account_id, access_key, secret_key, bucket)
-                image_urls.append(url)
-            json_result["image_urls"] = image_urls
-            json_result["message"] = "upload to r2 success"
-    else:
-        json_result["message"] = "not upload"
-        
-    return images, json.dumps(json_result)
+    return images
 
 
 def update_task_info(task_prompt):
@@ -193,6 +166,7 @@ def update_task_info(task_prompt):
 with gr.Blocks() as demo:
     with gr.Row():
         with gr.Column():
+            image = gr.Image(type='pil', label='Upload image')
             image_url =  gr.Textbox(label='Image url', placeholder='Enter text prompts (Optional)', info="The image_url parameter allows you to input a URL pointing to an image.")
             task_prompt = gr.Dropdown(['<OD>', '<CAPTION_TO_PHRASE_GROUNDING>', '<DENSE_REGION_CAPTION>', '<REGION_PROPOSAL>', '<OCR_WITH_REGION>', '<REFERRING_EXPRESSION_SEGMENTATION>', '<REGION_TO_SEGMENTATION>', '<OPEN_VOCABULARY_DETECTION>', '<REGION_TO_CATEGORY>', '<REGION_TO_DESCRIPTION>'], value="<CAPTION_TO_PHRASE_GROUNDING>", label="Task Prompt", info="check doc at [Florence](https://huggingface.co/microsoft/Florence-2-large)")
             text_prompt = gr.Textbox(label='Text prompt', placeholder='Enter text prompts')
@@ -204,24 +178,21 @@ with gr.Blocks() as demo:
                 return_rectangles = gr.Checkbox(label="Return Rectangles", value=False, info="The return_rectangles parameter, when enabled, generates masks as filled white rectangles corresponding to the bounding boxes of detected objects, rather than detailed contours or segments. This option is useful for simpler, box-based visualizations.")
                 invert_mask = gr.Checkbox(label="invert mask", value=False, info="The invert_mask option allows you to reverse the colors of the generated mask, changing black areas to white and white areas to black. This can be useful for visualizing or processing the mask in a different context.")
             
-            with gr.Accordion("R2 Settings", open=False):
-                upload_to_r2 = gr.Checkbox(label="Upload to R2", value=False)
-                with gr.Row():
-                    account_id = gr.Textbox(label="Account Id", placeholder="Enter R2 account id")
-                    bucket = gr.Textbox(label="Bucket Name", placeholder="Enter R2 bucket name here")
-
-                with gr.Row():
-                    access_key = gr.Textbox(label="Access Key", placeholder="Enter R2 access key here")
-                    secret_key = gr.Textbox(label="Secret Key", placeholder="Enter R2 secret key here")
-                
         with gr.Column():
             image_gallery = gr.Gallery(label="Generated images", show_label=False, elem_id="gallery", columns=[3], rows=[1], object_fit="contain", height="auto")
-            json_result = gr.Code(label="JSON Result", language="json")
+            # json_result = gr.Code(label="JSON Result", language="json")
+    
+   
+    image_url.change(
+        fn=fetch_image_from_url,
+        inputs=[image_url],
+        outputs=[image]
+    )
     
     submit_button.click(
         fn=process_image,
-        inputs=[image_url, task_prompt, text_prompt, dilate, merge_masks, return_rectangles, invert_mask, upload_to_r2, account_id, bucket, access_key, secret_key],
-        outputs=[image_gallery, json_result],
+        inputs=[image, image_url, task_prompt, text_prompt, dilate, merge_masks, return_rectangles, invert_mask],
+        outputs=[image_gallery],
         show_api=False
     )
 
