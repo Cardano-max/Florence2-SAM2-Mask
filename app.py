@@ -91,15 +91,10 @@ def process_image(image_input, image_url, task_prompt, text_prompt=None, dilate=
             task=task_prompt,
             text=text_prompt
         )
-    with calculateDuration("sv.Detections"):
-        # start to dectect
-        detections = sv.Detections.from_lmm(
-            lmm=sv.LMM.FLORENCE_2,
-            result=result,
-            resolution_wh=image_input.size
-        )
-    # json_result = json.dumps([])
-    # print(detections)
+    with calculateDuration("Create Detections"):
+        # Create detections manually based on the result
+        detections = create_detections_from_result(result, image_input.size)
+
     images = []
     if return_rectangles:
         with calculateDuration("generate rectangle mask"):
@@ -118,7 +113,7 @@ def process_image(image_input, image_url, task_prompt, text_prompt=None, dilate=
             if merge_masks:
                 images = [merge_mask_image] + images
     else:
-        with calculateDuration("generate segmenet mask"):
+        with calculateDuration("generate segment mask"):
             # using sam generate segments images        
             detections = run_sam_inference(SAM_IMAGE_MODEL, image_input, detections)
             if len(detections) == 0:
@@ -145,6 +140,19 @@ def process_image(image_input, image_url, task_prompt, text_prompt=None, dilate=
 
     return images
 
+def create_detections_from_result(result, image_size):
+    bboxes = []
+    labels = []
+    for task, task_result in result.items():
+        if 'bboxes' in task_result:
+            bboxes.extend(task_result['bboxes'])
+            labels.extend(task_result['labels'])
+    
+    return sv.Detections(
+        xyxy=np.array(bboxes),
+        class_id=np.arange(len(labels)),
+        confidence=np.ones(len(labels)),
+    )
 
 def update_task_info(task_prompt):
     task_info = {
