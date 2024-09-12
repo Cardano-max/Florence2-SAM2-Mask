@@ -12,6 +12,10 @@ import cv2
 import json
 import time
 import os
+import numpy as np
+import cv2
+from PIL import Image
+from typing import List, Dict, Optional
 
 from utils.florence import load_florence_model, run_florence_inference, \
     FLORENCE_OPEN_VOCABULARY_DETECTION_TASK
@@ -64,7 +68,7 @@ class calculateDuration:
 @spaces.GPU()
 @torch.inference_mode()
 @torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-def process_image(image_input, image_url, task_prompt, text_prompt=None, dilate=0, merge_masks=False, return_rectangles=False, invert_mask=False) -> Optional[Image.Image]:
+def process_image(image_input, image_url, task_prompt, text_prompt=None, dilate=0, merge_masks=False, return_rectangles=False, invert_mask=False) -> Optional[List[Image.Image]]:
     
     if not image_input:
         gr.Info("Please upload an image.")
@@ -94,7 +98,7 @@ def process_image(image_input, image_url, task_prompt, text_prompt=None, dilate=
     
     # Create detections manually
     detections = []
-    if 'bboxes' in result[task_prompt]:
+    if task_prompt in result and 'bboxes' in result[task_prompt]:
         bboxes = result[task_prompt]['bboxes']
         labels = result[task_prompt]['labels']
         for bbox, label in zip(bboxes, labels):
@@ -146,7 +150,17 @@ def process_image(image_input, image_url, task_prompt, text_prompt=None, dilate=
         with calculateDuration("invert mask colors"):
             images = [cv2.bitwise_not(mask) for mask in images]
 
-    return images
+    # Convert numpy arrays to PIL Images
+    pil_images = []
+    for mask in images:
+        if len(mask.shape) == 2:
+            pil_images.append(Image.fromarray(mask))
+        elif len(mask.shape) == 3:
+            pil_images.append(Image.fromarray(mask[:, :, 0]))  # Take the first channel if it's a 3D array
+        else:
+            print(f"Unexpected mask shape: {mask.shape}")
+
+    return pil_images
 
 
 def update_task_info(task_prompt):
